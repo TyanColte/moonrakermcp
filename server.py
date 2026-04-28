@@ -50,6 +50,13 @@ async def _post(path: str, data: dict | None = None) -> Any:
         return r.json()
 
 
+async def _get_text(path: str) -> str:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(f"{BASE_URL}{path}", headers=_headers())
+        r.raise_for_status()
+        return r.text
+
+
 async def _delete(path: str) -> Any:
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.delete(f"{BASE_URL}{path}", headers=_headers())
@@ -276,6 +283,25 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="read_file",
+            description="Read the contents of a file from a Moonraker file root (default: config).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to the root, e.g. 'printer.cfg' or 'config_backups/printer-20260426.cfg'",
+                    },
+                    "root": {
+                        "type": "string",
+                        "description": "File root (default: config)",
+                        "default": "config",
+                    },
+                },
+                "required": ["path"],
+            },
+        ),
+        types.Tool(
             name="get_api_key",
             description=(
                 "Retrieve the Moonraker API key. Only works when the request comes from "
@@ -397,6 +423,14 @@ async def _dispatch(name: str, args: dict[str, Any]) -> Any:
         case "delete_file":
             filename = args["filename"]
             return await _delete(f"/server/files/gcodes/{filename}")
+
+        case "read_file":
+            from urllib.parse import quote
+            root = args.get("root", "config")
+            path = args["path"]
+            encoded = "/".join(quote(p, safe="") for p in path.split("/"))
+            content = await _get_text(f"/server/files/{root}/{encoded}")
+            return {"root": root, "path": path, "content": content}
 
         case "get_api_key":
             return await _get("/access/api_key")
