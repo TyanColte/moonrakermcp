@@ -14,6 +14,10 @@ MOONRAKER_PORT = int(os.getenv("MOONRAKER_PORT", "7125"))
 MOONRAKER_API_KEY = os.getenv("MOONRAKER_API_KEY", "")
 BASE_URL = f"http://{MOONRAKER_HOST}:{MOONRAKER_PORT}"
 
+MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")
+MCP_PORT = int(os.getenv("MCP_PORT", "8765"))
+MCP_AUTH_KEY = os.getenv("MCP_AUTH_KEY", "")
+
 server = Server("moonraker-mcp")
 
 
@@ -400,5 +404,47 @@ async def main():
         )
 
 
+def run_http():
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Mount, Route
+    import uvicorn
+
+    sse = SseServerTransport("/messages/")
+
+    async def handle_sse(request: Request):
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await server.run(
+                streams[0], streams[1], server.create_initialization_options()
+            )
+
+    class AuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            if MCP_AUTH_KEY:
+                auth = request.headers.get("authorization", "")
+                if auth != f"Bearer {MCP_AUTH_KEY}":
+                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            return await call_next(request)
+
+    app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse.handle_post_message),
+        ]
+    )
+    if MCP_AUTH_KEY:
+        app.add_middleware(AuthMiddleware)
+
+    uvicorn.run(app, host="0.0.0.0", port=MCP_PORT)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    if MCP_TRANSPORT == "http":
+        run_http()
+    else:
+        asyncio.run(main())
