@@ -58,7 +58,8 @@ async def _delete(path: str) -> Any:
 
 
 async def _objects_query(*objects: str) -> Any:
-    return await _get_raw("/printer/objects/query", "&".join(objects))
+    from urllib.parse import quote
+    return await _get_raw("/printer/objects/query", "&".join(quote(o) for o in objects))
 
 
 async def _gcode(script: str) -> Any:
@@ -314,7 +315,16 @@ async def _dispatch(name: str, args: dict[str, Any]) -> Any:
             )
 
         case "get_temperatures":
-            return await _objects_query("heater_bed", "extruder")
+            objects = await _get("/printer/objects/list")
+            temp_prefixes = (
+                "extruder", "heater_bed", "heater_generic",
+                "temperature_sensor", "temperature_probe",
+            )
+            temp_objects = [
+                o for o in objects.get("result", {}).get("objects", [])
+                if any(o.startswith(p) for p in temp_prefixes)
+            ]
+            return await _objects_query(*temp_objects)
 
         case "get_job_status":
             return await _objects_query("print_stats", "virtual_sdcard", "display_status")
