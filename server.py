@@ -17,6 +17,7 @@ BASE_URL = f"http://{MOONRAKER_HOST}:{MOONRAKER_PORT}"
 MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")
 MCP_PORT = int(os.getenv("MCP_PORT", "8765"))
 MCP_AUTH_KEY = os.getenv("MCP_AUTH_KEY", "")
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", f"http://localhost:{MCP_PORT}")
 
 server = Server("moonraker-mcp")
 
@@ -450,13 +451,99 @@ async def main():
 
 def run_http():
     import contextlib
+    import secrets
+    import time
     from collections.abc import AsyncIterator
+    from mcp.server.auth.provider import (
+        AccessToken, AuthorizationCode, AuthorizationParams,
+        RefreshToken, construct_redirect_uri,
+    )
+    from mcp.server.auth.routes import create_auth_routes, create_protected_resource_routes
+    from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+    from pydantic import AnyHttpUrl
     from starlette.applications import Starlette
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.responses import JSONResponse
     from starlette.routing import Mount
     import uvicorn
+
+    issuer_url = AnyHttpUrl(MCP_SERVER_URL.rstrip("/"))
+    resource_url = AnyHttpUrl(MCP_SERVER_URL.rstrip("/") + "/")
+
+    class PermissiveOAuthProvider:
+        """In-memory OAuth provider that auto-approves all requests."""
+
+        def __init__(self):
+            self._clients: dict[str, OAuthClientInformationFull] = {}
+            self._auth_codes: dict[str, AuthorizationCode] = {}
+            self._access_tokens: dict[str, AccessToken] = {}
+            self._refresh_tokens: dict[str, RefreshToken] = {}
+
+        async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+            return self._clients.get(client_id)
+
+        async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+            self._clients[client_info.client_id] = client_info
+
+        async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+            code = secrets.token_urlsafe(32)
+            self._auth_codes[code] = AuthorizationCode(
+                code=code,
+                scopes=params.scopes or [],
+                expires_at=time.time() + 300,
+                client_id=client.client_id,
+                code_challenge=params.code_challenge,
+                redirect_uri=params.redirect_uri,
+                redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly,
+            )
+            return construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state)
+
+        async def load_authorization_code(self, client: OAuthClientInformationFull, code: str) -> AuthorizationCode | None:
+            return self._auth_codes.get(code)
+
+        async def exchange_authorization_code(self, client: OAuthClientInformationFull, auth_code: AuthorizationCode) -> OAuthToken:
+            del self._auth_codes[auth_code.code]
+            access = secrets.token_urlsafe(32)
+            refresh = secrets.token_urlsafe(32)
+            self._access_tokens[access] = AccessToken(
+                token=access, client_id=client.client_id, scopes=auth_code.scopes, expires_at=None,
+            )
+            self._refresh_tokens[refresh] = RefreshToken(
+                token=refresh, client_id=client.client_id, scopes=auth_code.scopes, expires_at=None,
+            )
+            return OAuthToken(
+                access_token=access, token_type="bearer",
+                refresh_token=refresh, scope=" ".join(auth_code.scopes),
+            )
+
+        async def load_refresh_token(self, client: OAuthClientInformationFull, token: str) -> RefreshToken | None:
+            return self._refresh_tokens.get(token)
+
+        async def exchange_refresh_token(self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list[str]) -> OAuthToken:
+            del self._refresh_tokens[refresh_token.token]
+            access = secrets.token_urlsafe(32)
+            new_refresh = secrets.token_urlsafe(32)
+            self._access_tokens[access] = AccessToken(
+                token=access, client_id=client.client_id, scopes=refresh_token.scopes, expires_at=None,
+            )
+            self._refresh_tokens[new_refresh] = RefreshToken(
+                token=new_refresh, client_id=client.client_id, scopes=refresh_token.scopes,
+            )
+            return OAuthToken(
+                access_token=access, token_type="bearer",
+                refresh_token=new_refresh, scope=" ".join(refresh_token.scopes),
+            )
+
+        async def load_access_token(self, token: str) -> AccessToken | None:
+            return self._access_tokens.get(token)
+
+        async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
+            if isinstance(token, AccessToken):
+                self._access_tokens.pop(token.token, None)
+            else:
+                self._refresh_tokens.pop(token.token, None)
+
+    oauth_provider = PermissiveOAuthProvider()
 
     session_manager = StreamableHTTPSessionManager(
         app=server,
@@ -469,22 +556,28 @@ def run_http():
         async with session_manager.run():
             yield
 
-    class AuthMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            if MCP_AUTH_KEY:
-                auth = request.headers.get("authorization", "")
-                if auth != f"Bearer {MCP_AUTH_KEY}":
-                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
-            return await call_next(request)
+    auth_routes = create_auth_routes(
+        provider=oauth_provider,
+        issuer_url=issuer_url,
+        client_registration_options=ClientRegistrationOptions(enabled=True, valid_scopes=["mcp"]),
+        revocation_options=RevocationOptions(enabled=True),
+    )
+
+    protected_resource_routes = create_protected_resource_routes(
+        resource_url=resource_url,
+        authorization_servers=[issuer_url],
+        scopes_supported=["mcp"],
+        resource_name="Moonraker MCP Server",
+    )
 
     app = Starlette(
         lifespan=lifespan,
         routes=[
-            Mount("/mcp", app=session_manager.handle_request),
+            *auth_routes,
+            *protected_resource_routes,
+            Mount("/", app=session_manager.handle_request),
         ]
     )
-    if MCP_AUTH_KEY:
-        app.add_middleware(AuthMiddleware)
 
     uvicorn.run(app, host="0.0.0.0", port=MCP_PORT)
 
