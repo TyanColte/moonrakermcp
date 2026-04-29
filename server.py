@@ -449,23 +449,25 @@ async def main():
 
 
 def run_http():
-    from mcp.server.sse import SseServerTransport
+    import contextlib
+    from collections.abc import AsyncIterator
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from starlette.applications import Starlette
     from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.requests import Request
     from starlette.responses import JSONResponse
-    from starlette.routing import Mount, Route
+    from starlette.routing import Mount
     import uvicorn
 
-    sse = SseServerTransport("/messages/")
+    session_manager = StreamableHTTPSessionManager(
+        app=server,
+        stateless=False,
+        json_response=False,
+    )
 
-    async def handle_sse(request: Request):
-        async with sse.connect_sse(
-            request.scope, request.receive, request._send
-        ) as streams:
-            await server.run(
-                streams[0], streams[1], server.create_initialization_options()
-            )
+    @contextlib.asynccontextmanager
+    async def lifespan(app: Starlette) -> AsyncIterator[None]:
+        async with session_manager.run():
+            yield
 
     class AuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
@@ -476,9 +478,9 @@ def run_http():
             return await call_next(request)
 
     app = Starlette(
+        lifespan=lifespan,
         routes=[
-            Route("/sse", endpoint=handle_sse),
-            Mount("/messages/", app=sse.handle_post_message),
+            Mount("/mcp", app=session_manager.handle_request),
         ]
     )
     if MCP_AUTH_KEY:
