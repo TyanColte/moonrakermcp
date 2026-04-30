@@ -310,6 +310,28 @@ async def list_tools() -> list[types.Tool]:
             ),
             inputSchema={"type": "object", "properties": {}},
         ),
+        types.Tool(
+            name="read_log",
+            description=(
+                "Read the tail of a Klipper or Moonraker log file. "
+                "Use list_files with root='logs' to see all available log files."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "log": {
+                        "type": "string",
+                        "description": "Log filename, e.g. 'klippy.log' or 'moonraker.log' (default: klippy.log)",
+                        "default": "klippy.log",
+                    },
+                    "lines": {
+                        "type": "integer",
+                        "description": "Number of lines from the end to return (default: 100)",
+                        "default": 100,
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -435,6 +457,20 @@ async def _dispatch(name: str, args: dict[str, Any]) -> Any:
 
         case "get_api_key":
             return await _get("/access/api_key")
+
+        case "read_log":
+            from urllib.parse import quote
+            log = args.get("log", "klippy.log")
+            lines = args.get("lines", 100)
+            content = await _get_text(f"/server/files/logs/{quote(log, safe='')}")
+            all_lines = content.splitlines()
+            tail = all_lines[-lines:]
+            return {
+                "log": log,
+                "total_lines": len(all_lines),
+                "lines_returned": len(tail),
+                "content": "\n".join(tail),
+            }
 
         case _:
             return {"error": f"Unknown tool: {name}"}
