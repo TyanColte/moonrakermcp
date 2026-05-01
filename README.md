@@ -29,6 +29,8 @@ An MCP (Model Context Protocol) server that bridges Claude to the [Moonraker](ht
 | `shutdown_host` | Shut down the host machine |
 | `get_print_history` | List past print jobs |
 | `delete_file` | Delete a gcode file |
+| `read_file` | Read the contents of a file from a Moonraker file root (default: config) |
+| `read_log` | Read the tail of a Klipper or Moonraker log file |
 | `get_api_key` | Retrieve the Moonraker API key |
 
 ## Environment Variables
@@ -40,7 +42,7 @@ An MCP (Model Context Protocol) server that bridges Claude to the [Moonraker](ht
 | `MOONRAKER_API_KEY` | *(empty)* | Moonraker API key (if required) |
 | `MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` or `http` |
 | `MCP_PORT` | `8765` | Port to listen on in HTTP mode |
-| `MCP_AUTH_KEY` | *(empty)* | Bearer token to protect the HTTP endpoint |
+| `MCP_SERVER_URL` | `http://localhost:8765` | Public base URL of the server, used as the OAuth 2.1 issuer URL in HTTP mode |
 
 ---
 
@@ -86,21 +88,22 @@ Add to your Claude Code config (`~/.claude/claude.json` or project `.claude/clau
 
 ### 2. HTTP mode (manual)
 
-For use with Claude.ai web app. The server exposes an SSE endpoint over HTTP, which should sit behind a reverse proxy that handles TLS.
+For use with Claude.ai web app. The server uses StreamableHTTP with OAuth 2.1 and should sit behind a reverse proxy that handles TLS.
 
 ```bash
 MCP_TRANSPORT=http \
 MCP_PORT=8765 \
-MCP_AUTH_KEY=your-secret-key \
+MCP_SERVER_URL=https://your-domain \
 MOONRAKER_HOST=192.168.1.100 \
 python server.py
 ```
 
-The SSE endpoint will be available at `http://localhost:8765/sse`.
+The MCP endpoint will be available at `http://localhost:8765/mcp`.
 
 Add to Claude.ai via **Settings → Integrations**:
-- **URL:** `https://your-domain/sse`
-- **Bearer token:** the value of `MCP_AUTH_KEY`
+- **URL:** `https://your-domain/mcp`
+
+Claude.ai will complete the OAuth flow automatically — no Bearer token is needed.
 
 ---
 
@@ -117,8 +120,8 @@ docker run -d \
   -p 8765:8765 \
   -e MCP_TRANSPORT=http \
   -e MCP_PORT=8765 \
+  -e MCP_SERVER_URL=https://your-domain \
   -e MOONRAKER_HOST=192.168.1.100 \
-  -e MCP_AUTH_KEY=your-secret-key \
   moonraker-mcp:latest
 ```
 
@@ -146,10 +149,10 @@ services:
     environment:
       - MCP_TRANSPORT=http
       - MCP_PORT=8765
+      - MCP_SERVER_URL=https://your-domain
       - MOONRAKER_HOST=192.168.1.100
       - MOONRAKER_PORT=7125
       - MOONRAKER_API_KEY=
-      - MCP_AUTH_KEY=your-secret-key
 ```
 
 #### Reverse proxy (Caddy example)
@@ -161,13 +164,53 @@ moonraker-mcp.your-domain.com {
 ```
 
 Then add to Claude.ai via **Settings → Integrations**:
-- **URL:** `https://moonraker-mcp.your-domain.com/sse`
-- **Bearer token:** the value of `MCP_AUTH_KEY`
+- **URL:** `https://moonraker-mcp.your-domain.com/mcp`
+
+Claude.ai will complete the OAuth flow automatically — no Bearer token is needed.
+
+---
+
+## Log Parsing Utilities
+
+Two Python modules are included for working with data returned by the `read_log` tool.
+
+### `klipper_log_parser.py`
+
+Parses Klipper log content and converts internal Klipper timestamps to wall-clock times.
+
+```python
+import json
+from klipper_log_parser import KlipperLog
+
+result = mcp_client.call_tool("read_log", {"log": "klippy.log", "lines": 500})
+log = KlipperLog(result)
+
+# List detected Klipper sessions with their start times
+print(log.sessions)
+
+# Convert a Klipper internal timestamp to wall time
+print(log.wall_time_for_klipper_time(7875.6))
+```
+
+### `tap_parser.py`
+
+Parses BTT Eddy tap test results from a `KlipperLog`. Returns `TapTest` objects with per-sample wall-clock times.
+
+```python
+from klipper_log_parser import KlipperLog
+from tap_parser import find_tap_tests
+
+log = KlipperLog(result)
+for test in find_tap_tests(log):
+    print(test)
+```
+
+Each `TapTest` contains `avg_z`, `stddev`, `true_z_zero`, `sensor_offset`, and a list of `TapSample` objects with individual `z`, `toolhead_z`, `overshoot`, and `wall_time` values.
 
 ---
 
 ## Security Notes
 
-- Always set `MCP_AUTH_KEY` when running in HTTP mode — without it the endpoint is open to anyone who knows the URL.
 - Always place the server behind a reverse proxy that terminates TLS. Never expose the HTTP port directly to the internet.
+- Set `MCP_SERVER_URL` to your public HTTPS URL in HTTP mode — it is used as the OAuth 2.1 issuer URL and must match what clients see.
 - `MOONRAKER_API_KEY` is only needed if your Moonraker instance has API key authentication enabled.
