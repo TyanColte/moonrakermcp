@@ -74,6 +74,18 @@ async def _gcode(script: str) -> Any:
     return await _post("/printer/gcode/script", {"script": script})
 
 
+async def _upload(root: str, path: str, content: bytes, filename: str) -> Any:
+    headers = {}
+    if MOONRAKER_API_KEY:
+        headers["X-Api-Key"] = MOONRAKER_API_KEY
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        files = {"file": (filename, content, "application/octet-stream")}
+        data = {"root": root, "path": path}
+        r = await client.post(f"{BASE_URL}/server/files/upload", headers=headers, files=files, data=data)
+        r.raise_for_status()
+        return r.json()
+
+
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
     return [
@@ -332,6 +344,181 @@ async def list_tools() -> list[types.Tool]:
                 },
             },
         ),
+        types.Tool(
+            name="list_macros",
+            description="List all gcode macros defined in the Klipper config.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="run_macro",
+            description="Run a Klipper gcode macro by name, with optional parameters.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "macro": {
+                        "type": "string",
+                        "description": "Macro name (e.g. 'START_PRINT', 'WARM_UP')",
+                    },
+                    "params": {
+                        "type": "string",
+                        "description": "Optional parameters to pass, e.g. 'BED_TEMP=60 EXTRUDER_TEMP=200'",
+                        "default": "",
+                    },
+                },
+                "required": ["macro"],
+            },
+        ),
+        types.Tool(
+            name="upload_file",
+            description="Upload a gcode file to the printer from a local file path on the server.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "local_path": {
+                        "type": "string",
+                        "description": "Absolute path to the local gcode file to upload",
+                    },
+                    "remote_filename": {
+                        "type": "string",
+                        "description": "Filename to save as on the printer (default: same as local filename)",
+                        "default": "",
+                    },
+                    "subdirectory": {
+                        "type": "string",
+                        "description": "Optional subdirectory within gcodes root",
+                        "default": "",
+                    },
+                },
+                "required": ["local_path"],
+            },
+        ),
+        types.Tool(
+            name="write_file",
+            description=(
+                "Write or overwrite a config file on the printer (e.g. printer.cfg). "
+                "Use read_file first to get the current content before editing."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to the root, e.g. 'printer.cfg'",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full file content to write",
+                    },
+                    "root": {
+                        "type": "string",
+                        "description": "File root (default: config)",
+                        "default": "config",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        ),
+        types.Tool(
+            name="extrude",
+            description="Extrude or retract filament. Positive length = extrude, negative = retract.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "length": {
+                        "type": "number",
+                        "description": "Length in mm to extrude (positive) or retract (negative)",
+                    },
+                    "speed": {
+                        "type": "number",
+                        "description": "Feed rate in mm/min (default: 300)",
+                        "default": 300,
+                    },
+                },
+                "required": ["length"],
+            },
+        ),
+        types.Tool(
+            name="set_fan_speed",
+            description="Set the part cooling fan speed (0-100%). Use 0 to turn off.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "speed": {
+                        "type": "number",
+                        "description": "Fan speed as a percentage 0-100",
+                    },
+                    "fan": {
+                        "type": "string",
+                        "description": "Fan name for named fans (default: part cooling fan via M106)",
+                        "default": "",
+                    },
+                },
+                "required": ["speed"],
+            },
+        ),
+        types.Tool(
+            name="list_timelapse",
+            description="List timelapse video files stored on the printer.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="render_timelapse",
+            description="Trigger rendering of the current timelapse frames into a video.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="get_timelapse_settings",
+            description="Get current timelapse plugin settings.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="get_spoolman_status",
+            description="Get Spoolman connection status and active spool info.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="get_active_spool",
+            description="Get the currently active spool ID tracked by Moonraker.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="set_active_spool",
+            description="Set the active spool ID in Moonraker/Spoolman.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "spool_id": {
+                        "type": "integer",
+                        "description": "Spoolman spool ID to set as active (null to clear)",
+                    }
+                },
+                "required": ["spool_id"],
+            },
+        ),
+        types.Tool(
+            name="list_power_devices",
+            description="List all power devices configured in Moonraker with their current state.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="set_power_device",
+            description="Turn a power device on, off, or toggle it.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "device": {
+                        "type": "string",
+                        "description": "Device name as configured in Moonraker",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["on", "off", "toggle"],
+                        "description": "Action to perform",
+                    },
+                },
+                "required": ["device", "action"],
+            },
+        ),
     ]
 
 
@@ -471,6 +658,81 @@ async def _dispatch(name: str, args: dict[str, Any]) -> Any:
                 "lines_returned": len(tail),
                 "content": "\n".join(tail),
             }
+
+        case "list_macros":
+            objects = await _get("/printer/objects/list")
+            all_objects = objects.get("result", {}).get("objects", [])
+            macros = [o.removeprefix("gcode_macro ") for o in all_objects if o.startswith("gcode_macro ")]
+            return {"macros": sorted(macros)}
+
+        case "run_macro":
+            macro = args["macro"].upper()
+            params = args.get("params", "").strip()
+            script = f"{macro} {params}".strip()
+            return await _gcode(script)
+
+        case "upload_file":
+            import os as _os
+            local_path = args["local_path"]
+            remote_filename = args.get("remote_filename", "") or _os.path.basename(local_path)
+            subdirectory = args.get("subdirectory", "")
+            with open(local_path, "rb") as f:
+                content = f.read()
+            return await _upload("gcodes", subdirectory, content, remote_filename)
+
+        case "write_file":
+            root = args.get("root", "config")
+            path = args["path"]
+            content = args["content"].encode("utf-8")
+            filename = path.split("/")[-1]
+            subdir = "/".join(path.split("/")[:-1])
+            return await _upload(root, subdir, content, filename)
+
+        case "extrude":
+            length = args["length"]
+            speed = args.get("speed", 300)
+            script = f"M83\nG1 E{length} F{speed}"
+            return await _gcode(script)
+
+        case "set_fan_speed":
+            speed_pct = args["speed"]
+            fan = args.get("fan", "")
+            if speed_pct <= 0:
+                script = "M107"
+            else:
+                pwm = round(speed_pct / 100 * 255)
+                if fan:
+                    script = f"SET_FAN_SPEED FAN={fan} SPEED={speed_pct / 100:.2f}"
+                else:
+                    script = f"M106 S{pwm}"
+            return await _gcode(script)
+
+        case "list_timelapse":
+            return await _get("/server/files/list", params={"root": "timelapse"})
+
+        case "render_timelapse":
+            return await _post("/machine/timelapse/render")
+
+        case "get_timelapse_settings":
+            return await _get("/machine/timelapse/settings")
+
+        case "get_spoolman_status":
+            return await _get("/server/spoolman/status")
+
+        case "get_active_spool":
+            return await _get("/server/spoolman/spool_id")
+
+        case "set_active_spool":
+            return await _post("/server/spoolman/spool_id", {"spool_id": args["spool_id"]})
+
+        case "list_power_devices":
+            return await _get("/machine/device_power/devices")
+
+        case "set_power_device":
+            return await _post(
+                "/machine/device_power/device",
+                {"device": args["device"], "action": args["action"]},
+            )
 
         case _:
             return {"error": f"Unknown tool: {name}"}
