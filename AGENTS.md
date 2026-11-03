@@ -1,6 +1,6 @@
 # moonraker-mcp
 
-MCP server bridging Claude to the Moonraker 3D printer API. Runs as a Docker container, exposed via Caddy at `moonraker-mcp.tyan.omegaos.us`.
+MCP server bridging Antigravity to the Moonraker 3D printer API. Runs as a Docker container, exposed via Ingressi/Caddy at `moonraker-mcp.tyan.omegaos.us`.
 
 ## Repo Layout
 
@@ -11,7 +11,7 @@ MCP server bridging Claude to the Moonraker 3D printer API. Runs as a Docker con
 
 ## Deploy
 
-Push to GitHub → GitHub Actions builds and pushes the image to GHCR → Watchtower picks it up automatically (no manual redeploy needed).
+Push to GitHub → GitHub Actions builds and pushes the image to GHCR → RenovateBot / Arcane GitOps webhook redeploys the stack automatically.
 
 Stack config: `~/git/docker-stacks/moonraker-mcp/docker-compose.yml`
 
@@ -69,6 +69,6 @@ API key via `MOONRAKER_API_KEY` env var (in `~/git/docker-stacks/environment/moo
 
 1. Add a `types.Tool(...)` entry in `list_tools()`
 2. Add a `case "tool_name":` block in `_dispatch()`
-3. Push — Watchtower handles the rest
+3. Push — GitHub Actions & Arcane GitOps handle the rest
 
 Helper functions: `_get`, `_post`, `_delete`, `_get_text`, `_get_raw`, `_gcode`, `_upload` (multipart file upload), `_objects_query` (Moonraker printer object queries).
