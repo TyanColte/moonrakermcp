@@ -19,8 +19,6 @@ MCP_PORT = int(os.getenv("MCP_PORT", "8765"))
 MCP_AUTH_KEY = os.getenv("MCP_AUTH_KEY", "")
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", f"http://localhost:{MCP_PORT}")
 
-server = Server("moonraker-mcp")
-
 
 def _headers() -> dict:
     h = {"Content-Type": "application/json"}
@@ -86,9 +84,8 @@ async def _upload(root: str, path: str, content: bytes, filename: str) -> Any:
         return r.json()
 
 
-@server.list_tools()
-async def list_tools() -> list[types.Tool]:
-    return [
+async def list_tools(ctx: Any, params: types.PaginatedRequestParams | None) -> types.ListToolsResult:
+    return types.ListToolsResult(tools=[
         types.Tool(
             name="get_server_info",
             description="Get Moonraker server info: version, components loaded, and websocket connection state.",
@@ -519,21 +516,28 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["device", "action"],
             },
         ),
-    ]
+    ])
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
+async def call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
+    name = params.name
+    arguments = params.arguments or {}
     try:
         result = await _dispatch(name, arguments)
-        return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result, indent=2))])
     except httpx.HTTPStatusError as e:
         msg = f"HTTP {e.response.status_code} from Moonraker: {e.response.text}"
-        return [types.TextContent(type="text", text=msg)]
+        return types.CallToolResult(content=[types.TextContent(type="text", text=msg)], isError=True)
     except httpx.RequestError as e:
-        return [types.TextContent(type="text", text=f"Connection error (is Moonraker running?): {e}")]
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=f"Connection error (is Moonraker running?): {e}")],
+            isError=True,
+        )
     except Exception as e:
-        return [types.TextContent(type="text", text=f"Error: {e}")]
+        return types.CallToolResult(content=[types.TextContent(type="text", text=f"Error: {e}")], isError=True)
+
+
+server = Server("moonraker-mcp", on_list_tools=list_tools, on_call_tool=call_tool)
 
 
 async def _dispatch(name: str, args: dict[str, Any]) -> Any:
